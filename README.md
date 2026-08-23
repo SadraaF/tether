@@ -1,6 +1,6 @@
 # tether
 
-Web terminal for a VPS. Single Go binary, browser client included.
+Self-hosted web terminal. Single Go binary, browser client included.
 
 Like ttyd, but built around unreliable connections. The resilience model is
 closer to mosh than to ttyd: the server keeps its own copy of the screen
