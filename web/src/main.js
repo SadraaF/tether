@@ -218,6 +218,8 @@ function connect() {
 
 let rtc = null;                 // { pc, dc, pendingIce }
 let rtcOff = localStorage.getItem('rtc-off') === '1';
+let lastStateFrameAt = 0; // perf.now() of last applied state frame (dc watchdog)
+let kfTimer = null;       // debounce handle for keyframe requests on seq gaps
 
 function rtcSend(obj) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
@@ -685,19 +687,23 @@ termEl.addEventListener('wheel', e => {
 // decision wheel makes — hand the gesture to the app when it owns the mouse
 // (omp transcript scrolling), otherwise scroll the local buffer.
 let touchY = null;
+let touchAcc = 0;
 termEl.addEventListener('touchstart', e => {
   touchY = e.touches[0].clientY;
+  touchAcc = 0;
 }, { passive: true });
 termEl.addEventListener('touchmove', e => {
   if (touchY === null) return;
   e.preventDefault(); // keep the page itself from rubber-banding
   const y = e.touches[0].clientY;
-  const dy = touchY - y; // swipe up = scroll down (positive)
+  touchAcc += touchY - y; // swipe up = scroll down (positive)
   touchY = y;
-  const lines = Math.trunc(dy / 16);
+  // touchmove fires at 60-120Hz with 2-8px deltas; accumulate pixels and
+  // emit whole-line gestures, never discarding sub-threshold movement.
+  const lines = Math.trunc(touchAcc / 16);
   if (!lines) return;
+  touchAcc -= lines * 16;
   if (mouseForwarding()) {
-    // hand the gesture to the app: synthesize wheel reports at the finger
     const t = e.touches[0];
     const ev = { deltaY: lines > 0 ? 120 : -120, clientX: t.clientX, clientY: t.clientY, button: 0, buttons: 0 };
     mouseBytes('wheel', ev);

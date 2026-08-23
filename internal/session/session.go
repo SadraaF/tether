@@ -37,8 +37,9 @@ type storedFrame struct {
 
 // Subscriber is one attached WebSocket view.
 type Subscriber struct {
-	ch      chan []byte
-	lastSeq uint32
+	ch        chan []byte
+	lastSeq   uint32
+	closeOnce sync.Once // emit's slow-consumer sever and CloseSub both close ch
 }
 
 // Ch exposes the frame queue for the connection writer pump.
@@ -263,7 +264,11 @@ func (s *Session) Resize(cols, rows uint16) {
 // shutdown terminates the child process; reader loop finalizes the rest.
 func (s *Session) shutdown() {
 	if s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+		// The child leads its own process group (setsid via pty), so the
+		// negated pid takes out the whole tree: shells, editors, builds.
+		if err := unix.Kill(-s.cmd.Process.Pid, unix.SIGKILL); err != nil {
+			_ = s.cmd.Process.Kill()
+		}
 	}
 }
 
@@ -354,7 +359,7 @@ func (s *Session) emitEphemeral(typ uint8, body []byte) {
 		case sub.ch <- data:
 		default:
 			delete(s.subs, sub)
-			close(sub.ch)
+			sub.closeOnce.Do(func() { close(sub.ch) })
 		}
 	}
 	s.mu.Unlock()
@@ -375,7 +380,7 @@ func (s *Session) finish() {
 	time.Sleep(300 * time.Millisecond) // let EXIT flush to sockets
 	s.mu.Lock()
 	for sub := range s.subs {
-		close(sub.ch)
+		sub.closeOnce.Do(func() { close(sub.ch) })
 		delete(s.subs, sub)
 	}
 	s.mu.Unlock()
@@ -412,8 +417,9 @@ func (s *Session) emit(typ uint8, body []byte) {
 		case sub.ch <- data:
 		default:
 			// Slow consumer: sever it; the client resumes via replay.
+			// closeOnce makes this idempotent against a later CloseSub.
 			delete(s.subs, sub)
-			close(sub.ch)
+			sub.closeOnce.Do(func() { close(sub.ch) })
 		}
 	}
 	s.mu.Unlock()
@@ -547,7 +553,8 @@ func (s *Session) Attach(hello proto.ClientHello) (*Subscriber, bool) {
 		(len(s.ring) > 0 && hello.LastSeq+1 < s.ring[0].seq)
 
 	if fresh {
-		kf := proto.Encode(nil, proto.Frame{Type: proto.TKeyframe, Seq: cur + 1, Body: s.diff.keyframe(s.state)})
+		s.seq = cur + 1 // the keyframe consumes this seq; next emit must not collide
+		kf := proto.Encode(nil, proto.Frame{Type: proto.TKeyframe, Seq: s.seq, Body: s.diff.keyframe(s.state)})
 		select {
 		case sub.ch <- kf:
 		default:
@@ -623,7 +630,7 @@ func (s *Session) CloseSub(sub *Subscriber) {
 	s.mu.Lock()
 	delete(s.subs, sub)
 	s.mu.Unlock()
-	close(sub.ch)
+	sub.closeOnce.Do(func() { close(sub.ch) })
 }
 
 // CreateWithID spawns a session registered under a specific id, replacing any

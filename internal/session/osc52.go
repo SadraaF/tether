@@ -199,6 +199,14 @@ func (s *osc52) finishFile(body string) {
 
 // decodeBase64Loose accepts standard or URL-safe alphabets.
 func decodeBase64Loose(b64 string) ([]byte, error) {
+	// Generators like GNU base64 wrap output at 76 columns; strip whitespace
+	// so wrapped payloads decode instead of failing on the first newline.
+	b64 = strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, b64)
 	dec, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		dec, err = base64.URLEncoding.DecodeString(b64)

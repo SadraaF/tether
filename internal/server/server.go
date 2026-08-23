@@ -150,75 +150,80 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	dir, fallback := s.uploadTarget()
 	r.Body = http.MaxBytesReader(w, r.Body, s.opts.MaxUpload)
 
-	// Stream to a temp file in the target directory, then rename into place.
-	// Buffering the whole body in RAM per request turned every large upload
-	// into a memory spike proportional to file size x concurrency.
-	write := func(dir string) (string, int64, error) {
+	// Spill the body to a private temp file first: r.Body is single-shot, so
+	// the fallback retry below (read-only or vanished cwd) must be able to
+	// re-read the bytes. This also keeps RAM use independent of file size.
+	spill, err := os.CreateTemp("", "tether-upload-*")
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	defer spill.Close()
+	defer os.Remove(spill.Name())
+	total, err := io.Copy(spill, r.Body)
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, "file exceeds size cap", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "read error", http.StatusBadRequest)
+		return
+	}
+	if total == 0 {
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+	if _, err := spill.Seek(0, io.SeekStart); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+
+	write := func(dir string) (string, error) {
 		tmp, err := os.CreateTemp(dir, ".tether-upload-*")
 		if err != nil {
-			return "", 0, err
+			return "", err
 		}
 		defer os.Remove(tmp.Name()) // no-op after successful rename
-		n, err := io.Copy(tmp, r.Body)
-		if cerr := tmp.Close(); err == nil && n > 0 {
-			err = cerr
+		if _, err := io.Copy(tmp, io.NewSectionReader(spill, 0, total)); err != nil {
+			return "", err
 		}
-		if err != nil || n == 0 {
-			var mbe *http.MaxBytesError
-			if errors.As(err, &mbe) {
-				return "", n, errTooLarge
-			}
-			if err == nil {
-				err = errEmptyBody
-			}
-			return "", n, err
+		if err := tmp.Close(); err != nil {
+			return "", err
 		}
 		path := uniquePath(dir, name)
 		if err := os.Chmod(tmp.Name(), 0o644); err != nil {
-			return "", n, err
+			return "", err
 		}
-		return path, n, os.Rename(tmp.Name(), path)
+		return path, os.Rename(tmp.Name(), path)
 	}
 
-	path, n, err := write(dir)
-	if errors.Is(err, errTooLarge) {
-		http.Error(w, "file exceeds size cap", http.StatusRequestEntityTooLarge)
-		return
-	}
-	if (errors.Is(err, errEmptyBody) || os.IsNotExist(err) || fallback) && !fallback {
+	path, err := write(dir)
+	if err != nil && !fallback {
 		// Foreground cwd may be read-only or vanished: retry at the home root.
 		if dir2, ok2 := s.uploadTargetHome(); ok2 && os.MkdirAll(dir2, 0o755) == nil {
-			if p2, n2, e2 := write(dir2); e2 == nil {
-				path, n, fallback = p2, n2, true
+			if p2, e2 := write(dir2); e2 == nil {
+				path, fallback = p2, true
 				err = nil
-			} else if !errors.Is(e2, errEmptyBody) {
-				err = e2
 			}
 		}
-	}
-	if errors.Is(err, errEmptyBody) {
-		http.Error(w, "empty body", http.StatusBadRequest)
-		return
 	}
 	if err != nil {
 		log.Printf("upload: write %s: %v", path, err)
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("upload: %s (%d bytes) from %s", path, n, r.RemoteAddr)
+	log.Printf("upload: %s (%d bytes) from %s", path, total, r.RemoteAddr)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"path":     path,
 		"disp":     displayPath(path),
-		"bytes":    n,
+		"bytes":    total,
 		"fallback": fallback,
 	})
 }
 
-var (
-	errTooLarge  = errors.New("too large")
-	errEmptyBody = errors.New("empty body")
-)
+var ()
 
 // uploadTarget picks where an upload lands: tether-uploads/ inside the live
 // session's foreground working directory when resolvable, else the configured
@@ -327,7 +332,7 @@ func (s *Server) auth(h http.Handler) http.Handler {
 		for range time.Tick(10 * time.Minute) {
 			failMu.Lock()
 			for ip, f := range fails {
-				if f.count < 5 && time.Since(f.blockedUntil) > time.Hour {
+				if time.Since(f.blockedUntil) > time.Hour {
 					delete(fails, ip)
 				}
 			}
