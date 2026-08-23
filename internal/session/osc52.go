@@ -174,7 +174,7 @@ func (s *osc52) finishFile(body string) {
 		k, v := kv[:eq], kv[eq+1:]
 		switch k {
 		case "name":
-			if dec, err := base64.URLEncoding.DecodeString(v); err == nil && len(dec) > 0 {
+			if dec, err := decodeBase64Loose(v); err == nil && len(dec) > 0 {
 				name = sanitizeFilename(string(dec))
 			}
 		case "size":

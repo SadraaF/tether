@@ -29,6 +29,10 @@ const (
 	DefaultCursor
 )
 
+// RGBFlag marks 24-bit truecolor values (r<<16|g<<8|b). Without it, dark RGB
+// values like #000080 would collide with xterm palette indices.
+const RGBFlag Color = 1 << 25
+
 // Color maps to the ANSI colors [0, 16) and the xterm colors [16, 256).
 type Color uint32
 

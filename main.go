@@ -8,8 +8,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"tether/internal/server"
@@ -71,6 +73,16 @@ func main() {
 		for range t.C {
 			mgr.Reap()
 		}
+	}()
+
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		log.Printf("shutting down: killing session trees")
+		mgr.KillAll()
+		time.Sleep(300 * time.Millisecond) // let readers observe EIO
+		os.Exit(0)
 	}()
 
 	log.Printf("tether listening on %s:%s", *addr, *port)

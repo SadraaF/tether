@@ -45,6 +45,12 @@ func (c *csiEscape) parse() {
 	s = s[:len(s)-1]
 	ss := strings.Split(s, ";")
 	for _, p := range ss {
+		if p == "" {
+			// ECMA-48: an omitted parameter takes the default value, which
+			// arg() callers express as 0. Breaking here dropped every
+			// parameter after the first empty one (e.g. "\e[1;;31m").
+			p = "0"
+		}
 		i, err := strconv.Atoi(p)
 		if err != nil {
 			//t.logf("invalid CSI arg '%s'\n", p)

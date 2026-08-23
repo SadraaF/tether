@@ -179,6 +179,16 @@ func (m *Manager) Reap() {
 	}
 }
 
+// KillAll terminates every session's child process tree. Used on shutdown so
+// background group members do not outlive the daemon attached to a dead pty.
+func (m *Manager) KillAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.sessions {
+		s.shutdown()
+	}
+}
+
 // --- session internals ----------------------------------------------------
 
 func (s *Session) IsAlive() bool {
@@ -375,6 +385,9 @@ func (s *Session) finish() {
 	if !wasAlive {
 		return
 	}
+	// Reap the child so it does not linger as a zombie. Wait can block on
+	// lingering group members, so run it out of band.
+	go func() { _ = s.cmd.Wait() }()
 	s.state.Lock()
 	s.emit(proto.TExit, nil)
 	s.state.Unlock()

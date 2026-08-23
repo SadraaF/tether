@@ -56,6 +56,10 @@ try {
 // color -> SGR param fragment list; fg=true uses 38-series codes
 function colorParams(c, fg) {
   const base = fg ? 30 : 40, bright = fg ? 90 : 100;
+  if (c & 0x02000000) { // vt.RGBFlag: truecolor, disjoint from palette
+    const rgb = c & 0xffffff;
+    return [fg ? 38 : 48, 2, (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255];
+  }
   if (c === 0x01000000 || c === 0x01000001) return [fg ? 39 : 49]; // defaults
   if (c < 256) {
     return c < 8 ? [base + c] : c < 16 ? [bright + c - 8] : [fg ? 38 : 48, 5, c];
@@ -442,7 +446,7 @@ let prevAlt = false;
 
 function handleFrame(buf) {
   const typ = buf[0];
-  const seq = buf[1] | (buf[2] << 8) | (buf[3] << 16) | (buf[4] << 24);
+  const seq = (buf[1] | (buf[2] << 8) | (buf[3] << 16) | (buf[4] << 24)) >>> 0;
   const len = buf[5] | (buf[6] << 8) | (buf[7] << 16) | (buf[8] << 24);
   const body = buf.subarray(9, 9 + len);
 
@@ -740,8 +744,13 @@ term.attachCustomKeyEventHandler(e => {
     return false;
   }
   if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
-    navigator.clipboard?.readText?.().then(paste).catch(() => {});
-    return false;
+    if (navigator.clipboard?.readText) {
+      navigator.clipboard.readText().then(paste).catch(() => {});
+      return false;
+    }
+    // Insecure context: no async clipboard. Let the native paste event
+    // reach xterm's textarea, which re-emits it through onData.
+    return true;
   }
   return true;
 });
