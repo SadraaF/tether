@@ -2,10 +2,11 @@
 
 Web terminal for a VPS. Single Go binary, browser client included.
 
-Like ttyd, but built around unreliable connections. The server keeps its own
-copy of the screen state (vendored vt10x) and sends clients deltas instead of
-raw bytes. Frames carry sequence numbers and are kept in a ring buffer, so a
-reconnecting client requests what it missed and continues where it was.
+Like ttyd, but built around unreliable connections. The resilience model is
+closer to mosh than to ttyd: the server keeps its own copy of the screen
+state (vendored vt10x) and sends clients deltas instead of raw bytes. Frames
+carry sequence numbers and are kept in a ring buffer, so a reconnecting
+client requests what it missed and continues where it was.
 
 ## Build
 
@@ -63,9 +64,8 @@ sequence it applied and receives the missing frames from the ring, or a
 keyframe when out of range.
 
 An optional WebRTC data channel mode sends screen updates unordered and
-unreliable, mosh style. Gaps trigger keyframe resync over the WebSocket.
+unreliable. Gaps trigger keyframe resync over the WebSocket.
 Open the page with ?nortc to disable it.
-
 On networks that filter outbound UDP (common on mobile carriers), direct
 candidates fail and clients fall back to a TURN relay over TCP. Configure one
 with -turn / -turn-user / -turn-pass; clients fetch their ICE config from /ice
