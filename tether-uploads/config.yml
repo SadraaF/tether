@@ -1,0 +1,21 @@
+shellPath: C:\WINDOWS\system32\bash.exe
+symbolPreset: unicode
+theme: 
+  dark: titanium
+setupVersion: 2
+modelRoles: 
+  default: opencode-zen/x-preview-f-free:xhigh
+defaultThinkingLevel: auto
+hideThinkingBlock: false
+retry: 
+  fallbackChains: 
+    default: 
+      - openrouter/stealth/ox-alpha
+dev: 
+  autoqaConsent: denied
+cycleOrder: 
+  - smol
+  - default
+  - slow
+composer: 
+  shape: box

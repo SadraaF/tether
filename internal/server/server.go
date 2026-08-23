@@ -106,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 	if s.opts.TurnURL != "" {
 		mux.HandleFunc("/ice", s.handleIce)
 	}
+	mux.HandleFunc("/offers", s.handleOffers)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -340,6 +341,12 @@ func (s *Server) auth(h http.Handler) http.Handler {
 		}
 	}()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/offers" {
+			// Local processes (tdl) hand over file offers without knowing
+			// the password; handleOffers enforces its own loopback guard.
+			s.handleOffers(w, r)
+			return
+		}
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 		failMu.Lock()
 		f := fails[ip]
@@ -376,6 +383,41 @@ func (s *Server) auth(h http.Handler) http.Handler {
 		failMu.Unlock()
 		h.ServeHTTP(w, r)
 	})
+}
+
+// handleOffers accepts a file offer from a local process and fans it out to
+// every live session's viewers as a T_FILE frame. Multiplexer panes swallow
+// OSC sequences, so tdl posts here instead of relying on the PTY stream.
+// Restricted to loopback: anything able to reach 127.0.0.1 on this box could
+// type into the terminal anyway, so an extra secret adds nothing.
+func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || (host != "127.0.0.1" && host != "::1") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := sanitizeUploadName(r.Header.Get("X-Filename"))
+	if name == "" {
+		http.Error(w, "missing X-Filename", http.StatusBadRequest)
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, s.opts.MaxUpload)
+	data, err := io.ReadAll(body)
+	if err != nil {
+		http.Error(w, "read error", http.StatusBadRequest)
+		return
+	}
+	if len(data) == 0 {
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+	n := s.opts.Mgr.BroadcastOffer(name, data)
+	log.Printf("offers: %s (%d bytes) to %d session(s)", name, len(data), n)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type authFails struct {

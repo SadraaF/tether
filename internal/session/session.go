@@ -27,6 +27,7 @@ type Config struct {
 	Shell       string        // login shell to spawn
 	Command     []string      // full spawn command; overrides Shell when set
 	IdleTimeout time.Duration // kill sessions with no viewers after this (0 = never)
+	Env         []string      // extra environment for spawned shells (e.g. TETHER_PORT)
 }
 
 type storedFrame struct {
@@ -37,10 +38,15 @@ type storedFrame struct {
 
 // Subscriber is one attached WebSocket view.
 type Subscriber struct {
-	ch        chan []byte
+	ch        chan []byte // screen frames; may ride the unreliable transport
+	reliable  chan []byte // ephemeral offers; WS-delivered, never dropped
 	lastSeq   uint32
 	closeOnce sync.Once // emit's slow-consumer sever and CloseSub both close ch
 }
+
+// Reliable returns the side channel for frames that must not be lost
+// (file offers). The DataChannel pump never reads it.
+func (sub *Subscriber) Reliable() <-chan []byte { return sub.reliable }
 
 // Ch exposes the frame queue for the connection writer pump.
 func (s *Subscriber) Ch() <-chan []byte { return s.ch }
@@ -123,6 +129,7 @@ func (m *Manager) Create(cols, rows uint16) (*Session, error) {
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = append(cmd.Env, m.cfg.Env...)
 	ttyFile, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		return nil, fmt.Errorf("spawn shell: %w", err)
@@ -187,6 +194,31 @@ func (m *Manager) KillAll() {
 	for _, s := range m.sessions {
 		s.shutdown()
 	}
+}
+
+// BroadcastOffer delivers a file offer from a local process (the /offers
+// loopback endpoint) to every live session's viewers. Multiplexer panes can
+// swallow OSC 1337 sequences, so tdl also uses this out-of-band path.
+func (m *Manager) BroadcastOffer(name string, data []byte) int {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if s.IsAlive() {
+			sessions = append(sessions, s)
+		}
+	}
+	m.mu.Unlock()
+	n := 0
+	for _, s := range sessions {
+		s.EmitFileOffer(name, data)
+		n++
+	}
+	return n
+}
+
+// EmitFileOffer pushes a download offer to all attached viewers.
+func (s *Session) EmitFileOffer(name string, data []byte) {
+	s.emitEphemeral(proto.TFile, encodeFileOffer(FileOffer{Name: name, Data: data}))
 }
 
 // --- session internals ----------------------------------------------------
@@ -360,17 +392,18 @@ func encodeFileOffer(fo FileOffer) []byte {
 }
 
 // emitEphemeral fans a frame out without assigning a sequence number or
-// occupying replay-ring space. Ephemeral frames are best-effort notifications
-// (file offers); clients must not sequence-guard them.
+// occupying replay-ring space. Offers ride the subscriber's reliable side
+// channel: they must survive even when screen updates are flowing over the
+// lossy DataChannel, where a dropped datagram would silently swallow them.
 func (s *Session) emitEphemeral(typ uint8, body []byte) {
 	data := proto.Encode(make([]byte, 0, len(body)+proto.HeaderSize), proto.Frame{Type: typ, Body: body})
 	s.mu.Lock()
 	for sub := range s.subs {
 		select {
-		case sub.ch <- data:
+		case sub.reliable <- data:
 		default:
-			delete(s.subs, sub)
-			sub.closeOnce.Do(func() { close(sub.ch) })
+			// Backlogged viewer misses this offer rather than the whole
+			// session being severed for it.
 		}
 	}
 	s.mu.Unlock()
@@ -394,7 +427,7 @@ func (s *Session) finish() {
 	time.Sleep(300 * time.Millisecond) // let EXIT flush to sockets
 	s.mu.Lock()
 	for sub := range s.subs {
-		sub.closeOnce.Do(func() { close(sub.ch) })
+		sub.closeOnce.Do(func() { close(sub.ch); close(sub.reliable) })
 		delete(s.subs, sub)
 	}
 	s.mu.Unlock()
@@ -433,7 +466,7 @@ func (s *Session) emit(typ uint8, body []byte) {
 			// Slow consumer: sever it; the client resumes via replay.
 			// closeOnce makes this idempotent against a later CloseSub.
 			delete(s.subs, sub)
-			sub.closeOnce.Do(func() { close(sub.ch) })
+			sub.closeOnce.Do(func() { close(sub.ch); close(sub.reliable) })
 		}
 	}
 	s.mu.Unlock()
@@ -550,7 +583,7 @@ func (s *Session) coalesceLoop() {
 // SERVERHELLO, then either replayed missed frames or a fresh keyframe.
 // The returned Subscriber is already registered for live broadcasts.
 func (s *Session) Attach(hello proto.ClientHello) (*Subscriber, bool) {
-	sub := &Subscriber{ch: make(chan []byte, 1024)}
+	sub := &Subscriber{ch: make(chan []byte, 1024), reliable: make(chan []byte, 16)}
 
 	s.state.Lock() // blocks coalescer: history + registration stay ordered
 	defer s.state.Unlock()
@@ -644,7 +677,7 @@ func (s *Session) CloseSub(sub *Subscriber) {
 	s.mu.Lock()
 	delete(s.subs, sub)
 	s.mu.Unlock()
-	sub.closeOnce.Do(func() { close(sub.ch) })
+	sub.closeOnce.Do(func() { close(sub.ch); close(sub.reliable) })
 }
 
 // CreateWithID spawns a session registered under a specific id, replacing any
@@ -685,24 +718,53 @@ func (m *Manager) Primary() *Session {
 	return nil
 }
 
-// ForegroundDir resolves the working directory of the terminal's current
-// foreground process group: TIOCGPGRP on the PTY names the group, and
-// /proc/<pid>/cwd yields its directory. Returns "" when nothing resolvable
-// runs (rare) or the platform refuses the ioctl. Used to route uploads into
-// the directory the user is actually looking at.
+// ForegroundDir resolves the directory the user is actually looking at, to
+// route uploads there.
+//
+// The cheap path is TIOCGPGRP on the PTY: in a plain shell (or a full-screen
+// app like vim) the foreground group leader's /proc/<pid>/cwd is the answer.
+//
+// Under a terminal multiplexer (herdr, tmux, ...) that breaks: pane shells
+// live on inner ptys, so the OUTER pty's foreground group is always the
+// multiplexer itself, whose cwd never moves from wherever it was launched.
+// In that case walk the session process tree and take the cwd of the most
+// recently started shell; with several panes the newest one is usually the
+// one being worked in. Returns "" when nothing resolvable exists.
 func (s *Session) ForegroundDir() string {
-	pgid, err := unix.IoctlGetInt(int(s.ttyFile.Fd()), unix.TIOCGPGRP)
-	if err != nil || pgid <= 1 {
+	launch := ""
+	if s.cmd.Process != nil {
+		launch = procCwd(s.cmd.Process.Pid)
+	}
+	fg := ""
+	if pgid, err := unix.IoctlGetInt(int(s.ttyFile.Fd()), unix.TIOCGPGRP); err == nil && pgid > 1 {
+		fg = procCwd(pgid)
+	}
+	if fg != "" && fg != launch {
+		return fg // unambiguous: the foreground app has its own directory
+	}
+	if d := newestShellDir(launch, s.cmd.Process.Pid); d != "" {
+		return d // multiplexer case (or fg unresolvable)
+	}
+	return fg
+}
+
+func procCwd(pid int) string {
+	cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil {
 		return ""
 	}
-	// The group leader is almost always the shell/app the user is looking
-	// at; its cwd answers the question without walking /proc. Fall back to
-	// a member scan only when that readlink fails.
-	if cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pgid)); err == nil && cwd != "" {
-		return cwd
+	return cwd
+}
+
+// newestShellDir walks the process subtree rooted at root and returns the cwd
+// of its most recently started shell. start times are compared numerically
+// (field 22 of /proc/pid/stat); pid breaks ties.
+func newestShellDir(launch string, root int) string {
+	type proc struct {
+		ppid  int
+		start uint64
 	}
-	leader := ""
-	member := ""
+	table := map[int]proc{}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return ""
@@ -716,34 +778,54 @@ func (s *Session) ForegroundDir() string {
 		if err != nil {
 			continue
 		}
-		// pgrp is field 5; comm (field 2) may contain spaces/parens, so parse
-		// fields after the last ')'.
 		idx := bytes.LastIndexByte(stat, ')')
 		if idx < 0 {
 			continue
 		}
 		fields := bytes.Fields(stat[idx+1:])
-		if len(fields) < 3 {
+		if len(fields) < 20 {
 			continue
 		}
-		pgrp, err := strconv.Atoi(string(fields[2]))
-		if err != nil || pgrp != pgid {
+		ppid, err1 := strconv.Atoi(string(fields[1]))
+		start, err2 := strconv.ParseUint(string(fields[19]), 10, 64)
+		if err1 != nil || err2 != nil {
 			continue
 		}
-		cwd, err := os.Readlink("/proc/" + e.Name() + "/cwd")
-		if err != nil || cwd == "" {
-			continue
-		}
-		if pid == pgid {
-			leader = cwd
-			break
-		}
-		if member == "" {
-			member = cwd
+		table[pid] = proc{ppid: ppid, start: start}
+	}
+	if _, ok := table[root]; !ok {
+		return "" // child already reaped; nothing to walk
+	}
+	bestCwd, bestStart, bestPID := "", uint64(0), 0
+	var walk func(pid int)
+	walk = func(pid int) {
+		for p, inf := range table {
+			if inf.ppid != pid {
+				continue
+			}
+			if isShell(p) {
+				cwd := procCwd(p)
+				if cwd != "" && cwd != launch &&
+					(inf.start > bestStart || (inf.start == bestStart && p > bestPID)) {
+					bestCwd, bestStart, bestPID = cwd, inf.start, p
+				}
+			}
+			walk(p)
 		}
 	}
-	if leader != "" {
-		return leader
+	walk(root)
+	return bestCwd
+}
+
+var shellNames = map[string]bool{
+	"bash": true, "zsh": true, "sh": true, "dash": true, "ash": true,
+	"fish": true, "ksh": true, "mksh": true, "csh": true, "tcsh": true,
+}
+
+func isShell(pid int) bool {
+	comm, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	if err != nil {
+		return false
 	}
-	return member
+	return shellNames[string(bytes.TrimRight(comm, "\n"))]
 }

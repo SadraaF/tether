@@ -95,7 +95,41 @@ func (l *link) nextGen() uint64 { l.gen++; return l.gen }
 func (l *link) startWSPump(sub *session.Subscriber, gen uint64) {
 	go func() {
 		conn := l.conn
-		for frame := range sub.Ch() {
+		for {
+			var frame []byte
+			select {
+			case f, ok := <-sub.Ch():
+				if !ok {
+					l.pumpDied(gen)
+					return
+				}
+				frame = f
+			case f, ok := <-sub.Reliable():
+				if !ok {
+					l.pumpDied(gen)
+					return
+				}
+				frame = f
+			}
+			l.writeMu.Lock()
+			_ = conn.SetWriteDeadline(writeDeadline())
+			err := conn.WriteMessage(websocketBinary, frame)
+			l.writeMu.Unlock()
+			if err != nil {
+				break
+			}
+		}
+		l.pumpDied(gen)
+	}()
+}
+
+// startRelayPump delivers reliable-only frames (file offers) over the
+// WebSocket while the DataChannel owns the screen stream. The WS pump is not
+// running then, so without this, offers would have no consumer.
+func (l *link) startRelayPump(sub *session.Subscriber, gen uint64) {
+	go func() {
+		conn := l.conn
+		for frame := range sub.Reliable() {
 			l.writeMu.Lock()
 			_ = conn.SetWriteDeadline(writeDeadline())
 			err := conn.WriteMessage(websocketBinary, frame)
@@ -165,6 +199,7 @@ func (l *link) swapToDC(dc *webrtc.DataChannel) {
 
 	log.Printf("[%s] rtc: datachannel open; frames now over UDP", l.sess.ID)
 	l.startDCPump(dc, ns, gen)
+	l.startRelayPump(ns, gen)
 }
 
 // revertToWS returns framing to the WebSocket after DataChannel loss.
@@ -215,6 +250,7 @@ func (l *link) resync(hello proto.ClientHello) {
 
 	if dc != nil {
 		l.startDCPump(dc, ns, gen)
+		l.startRelayPump(ns, gen)
 	} else {
 		l.startWSPump(ns, gen)
 	}

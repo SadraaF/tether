@@ -1,10 +1,24 @@
 #!/bin/sh
-# tdl — offer a file for download through tether (iTerm2 OSC 1337 format).
+# tdl — offer a file for download through tether.
 # Usage: tdl <file>
-# Works in any pane: the bytes ride the PTY stream; the tether browser UI
-# shows a save chip. Also compatible with iTerm2 itself.
+#
+# Two delivery paths:
+#   1. POST to tether's loopback /offers endpoint (default). Works from any
+#      pane, including inside terminal multiplexers whose relay swallows OSC.
+#   2. iTerm2-style OSC 1337 on the PTY stream (iTerm2 itself understands it).
+# Path 2 is the fallback when the loopback endpoint is unreachable.
 [ $# -eq 1 ] || { echo "usage: tdl <file>" >&2; exit 1; }
 [ -f "$1" ] || { echo "not a file: $1" >&2; exit 1; }
+
+url="${TETHER_OFFERS_URL:-http://127.0.0.1:${TETHER_PORT:-7690}/offers}"
+if command -v curl >/dev/null 2>&1 &&
+	curl -fsS --max-time 5 -X POST "$url" \
+		-H "X-Filename: $(basename -- "$1")" \
+		--data-binary @"$1" >/dev/null 2>&1; then
+	echo "-> offered $1"
+	exit 0
+fi
+
 name=$(printf %s "$1" | base64 | tr -d '\n')
 size=$(wc -c < "$1" | tr -d ' ')
 printf '\033]1337;File=name=%s;size=%s:' "$name" "$size"

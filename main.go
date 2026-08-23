@@ -37,7 +37,7 @@ func main() {
 	turnPass := flag.String("turn-pass", "", "TURN password")
 	flag.Parse()
 
-	cfg := session.Config{IdleTimeout: *idle}
+	cfg := session.Config{IdleTimeout: *idle, Env: []string{"TETHER_PORT=" + *port}}
 	if *sh != "" {
 		cfg.Command = []string{"/bin/sh", "-c", *sh}
 	}
