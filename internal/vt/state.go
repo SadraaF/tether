@@ -340,8 +340,9 @@ func (t *State) resize(cols, rows int) bool {
 		for i > 0 && !tabs[i] {
 			i--
 		}
-		for i += tabspaces; i < len(tabs); i += tabspaces {
-			tabs[i] = true
+		// tabs is the OLD slice; new stops belong in t.tabs up to the new width.
+		for i += tabspaces; i < cols; i += tabspaces {
+			t.tabs[i] = true
 		}
 	}
 
@@ -478,7 +479,10 @@ func (t *State) scrollDown(orig, n int) {
 
 func (t *State) scrollUp(orig, n int) {
 	n = clamp(n, 0, t.bottom-orig+1)
-	if t.scrollHook != nil && n > 0 && orig == 0 && t.bottom == t.rows-1 &&
+	if n == 0 {
+		return
+	}
+	if t.scrollHook != nil && orig == 0 && t.bottom == t.rows-1 &&
 		t.mode&ModeAltScreen == 0 {
 		off := make([]line, n)
 		for i := range n {
@@ -493,8 +497,9 @@ func (t *State) scrollUp(orig, n int) {
 		t.dirty[i] = true
 		t.dirty[i+n] = true
 	}
-
-	// TODO: selection scroll
+	// Spec: blank lines enter from the bottom; the rotation above parks the
+	// scrolled-off top lines there instead. Erase them.
+	t.clear(0, t.bottom-n+1, t.cols-1, t.bottom)
 }
 
 func (t *State) modMode(set bool, bit ModeFlag) {

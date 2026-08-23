@@ -465,7 +465,7 @@ function handleFrame(buf) {
       sid = newSid;
       localStorage.setItem('tether.sid', sid);
       const cols = dv.getUint16(1 + n, true), rows = dv.getUint16(3 + n, true);
-      applyModes(dv.getUint32(5 + n, true));
+      applyModes(dv.getUint32(9 + n, true)); // modes live after cols/rows/nextSeq
       prevAlt = !!(modes & ALT_SCREEN);
       // our size wins; tell the PTY
       scheduleFit(true);

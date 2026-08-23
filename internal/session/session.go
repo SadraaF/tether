@@ -82,6 +82,7 @@ type Session struct {
 // Manager creates and reaps sessions.
 type Manager struct {
 	mu       sync.Mutex
+	createMu sync.Mutex // serializes CreateWithID check-spawn-register
 	sessions map[string]*Session
 	cfg      Config
 }
@@ -263,7 +264,7 @@ func (s *Session) Resize(cols, rows uint16) {
 
 // shutdown terminates the child process; reader loop finalizes the rest.
 func (s *Session) shutdown() {
-	if s.cmd.Process != nil {
+	if s.cmd.Process != nil && s.cmd.Process.Pid > 1 {
 		// The child leads its own process group (setsid via pty), so the
 		// negated pid takes out the whole tree: shells, editors, builds.
 		if err := unix.Kill(-s.cmd.Process.Pid, unix.SIGKILL); err != nil {
@@ -636,6 +637,8 @@ func (s *Session) CloseSub(sub *Subscriber) {
 // CreateWithID spawns a session registered under a specific id, replacing any
 // dead session that previously held it.
 func (m *Manager) CreateWithID(id string, cols, rows uint16) (*Session, error) {
+	m.createMu.Lock()
+	defer m.createMu.Unlock()
 	m.mu.Lock()
 	if old := m.sessions[id]; old != nil && old.IsAlive() {
 		m.mu.Unlock()

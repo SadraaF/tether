@@ -359,6 +359,7 @@ func (l *link) handleOffer(sdp string) {
 				l.pc = nil
 			}
 			l.mu.Unlock()
+			_ = pc.Close() // failed pcs keep ICE goroutines and sockets alive
 			l.revertToWS("rtc " + st.String())
 		}
 	})

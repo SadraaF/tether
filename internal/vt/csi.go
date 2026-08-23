@@ -120,7 +120,7 @@ func (t *State) handleCSI() {
 				t.clear(0, t.cur.Y+1, t.cols-1, t.rows-1)
 			}
 		case 1: // above
-			if t.cur.Y > 1 {
+			if t.cur.Y > 0 {
 				t.clear(0, 0, t.cols-1, t.cur.Y-1)
 			}
 			t.clear(0, t.cur.Y, t.cur.X, t.cur.Y)
