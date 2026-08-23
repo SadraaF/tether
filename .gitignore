@@ -1,3 +1,5 @@
 tether
 node_modules/
 *.log
+out/
+test/
