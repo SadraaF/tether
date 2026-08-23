@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0f1216">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>tether</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/xterm.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230f1216'/><path d='M24 32l20 18-20 18' stroke='%237aa2f7' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/><path d='M52 70h26' stroke='%23c0caf5' stroke-width='9' stroke-linecap='round'/></svg>">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand"><svg width="17" height="17" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="#1a2030"/><path d="M24 32l20 18-20 18" stroke="#7aa2f7" stroke-width="9" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M52 70h26" stroke="#c0caf5" stroke-width="9" stroke-linecap="round"/></svg><span>tether</span></div>
+  <div id="term-title" class="title"></div>
+  <div class="spacer"></div>
+  <div id="status" class="status offline" title="connection"><span class="dot"></span><span id="status-label">offline</span></div>
+</header>
+
+<main id="wrap"><div id="term"></div>
+  <div id="exit-overlay" hidden>
+    <div class="card">
+      <p>Session ended.</p>
+      <button id="restart">Start new session</button>
+    </div>
+  </div>
+</main>
+<div id="dl-chip" hidden>
+  <span id="dl-name"></span>
+  <button id="dl-save">Save</button>
+  <button id="dl-dismiss" title="dismiss">&times;</button>
+</div>
+<div id="toast" hidden></div>
+
+<nav id="bar" aria-label="terminal keys">
+  <button data-key="esc">Esc</button>
+  <button data-key="ctrl" id="ctrl-btn">Ctrl</button>
+  <button data-key="tab">Tab</button>
+  <button data-seq="up"   class="wide">&#8593;</button>
+  <button data-seq="left" class="wide">&#8592;</button>
+  <button data-seq="down" class="wide">&#8595;</button>
+  <button data-seq="right" class="wide">&#8594;</button>
+  <button data-key="home">Home</button>
+  <button data-key="end">End</button>
+  <button data-key="pgup">PgUp</button>
+  <button data-key="pgdn">PgDn</button>
+  <span class="gap"></span>
+  <button data-act="mouse" id="mouse-btn" title="toggle: send clicks to app vs select text">Mouse</button>
+  <button data-act="dc" id="dc-btn" title="toggle datagram transport (mosh-style WebRTC)">dc</button>
+  <button data-act="copy">Copy</button>
+  <button data-act="paste">Paste</button>
+  <span class="gap"></span>
+  <button data-key="pipe">|</button>
+  <button data-key="tilde">~</button>
+  <button data-key="dash">-</button>
+  <button id="bar-toggle" title="hide bar">&#8964;</button>
+</nav>
+
+<script src="/bundle.js"></script>
+</body>
+</html>

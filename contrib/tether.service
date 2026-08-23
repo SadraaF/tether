@@ -1,0 +1,19 @@
+[Unit]
+Description=tether web terminal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sadra
+WorkingDirectory=/home/sadra/term
+ExecStart=/home/sadra/term/tether -p 7690 -c sadra:mooring -shared -idle 0 -turn "turn:10.99.99.99:3478?transport=tcp" -turn-user turnuser -turn-pass turnpass
+Restart=on-failure
+RestartSec=2
+
+# point the datagram path at your own TURN relay; see README
+# hardening, kept light so the shell child processes behave normally
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
